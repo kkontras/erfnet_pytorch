@@ -11,7 +11,7 @@ import torch
 import math
 
 from PIL import Image, ImageOps
-from argparse import ArgumentParser
+# from argparse import ArgumentParser
 
 from torch.optim import SGD, Adam, lr_scheduler
 from torch.autograd import Variable
@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, CenterCrop, Normalize, Resize, Pad
 from torchvision.transforms import ToTensor, ToPILImage
 
-from dataset import VOC12,cityscapes
+from dataset import VOC12, cityscapes
 from transform import Relabel, ToLabel, Colorize
 from visualize import Dashboard
 
@@ -29,7 +29,7 @@ from iouEval import iouEval, getColorEntry
 from shutil import copyfile
 
 NUM_CHANNELS = 3
-NUM_CLASSES = 20 #pascal=22, cityscapes=20
+NUM_CLASSES = 34 #pascal=22, cityscapes=20
 
 color_transform = Colorize(NUM_CLASSES)
 image_transform = ToPILImage()
@@ -76,7 +76,7 @@ class CrossEntropyLoss2d(torch.nn.Module):
     def __init__(self, weight=None):
         super().__init__()
 
-        self.loss = torch.nn.NLLLoss2d(weight)
+        self.loss = torch.nn.NLLLoss(weight)
 
     def forward(self, outputs, targets):
         return self.loss(torch.nn.functional.log_softmax(outputs, dim=1), targets)
@@ -136,16 +136,15 @@ def train(args, model, enc=False):
 
     co_transform = MyCoTransform(enc, augment=True, height=args.height)#1024)
     co_transform_val = MyCoTransform(enc, augment=False, height=args.height)#1024)
-    dataset_train = cityscapes(args.datadir, co_transform, 'train')
-    dataset_val = cityscapes(args.datadir, co_transform_val, 'val')
-
+    dataset_train = cityscapes(args.datadir, co_transform, 'train',50)
+    dataset_val = cityscapes(args.datadir, co_transform_val, 'val',100)
+    print(len(dataset_train))
     loader = DataLoader(dataset_train, num_workers=args.num_workers, batch_size=args.batch_size, shuffle=True)
     loader_val = DataLoader(dataset_val, num_workers=args.num_workers, batch_size=args.batch_size, shuffle=False)
-
+#     print(list(enumerate(loader)))
     if args.cuda:
         weight = weight.cuda()
     criterion = CrossEntropyLoss2d(weight)
-    print(type(criterion))
 
     savedir = f'../save/{args.savedir}'
 
@@ -212,9 +211,12 @@ def train(args, model, enc=False):
             usedLr = float(param_group['lr'])
 
         model.train()
+        #print("this is me!!!!!")
+        #print(len(loader))
         for step, (images, labels) in enumerate(loader):
 
             start_time = time.time()
+            #print("this is also m")
             #print (labels.size())
             #print (np.unique(labels.numpy()))
             #print("labels: ", np.unique(labels[0].numpy()))
@@ -228,13 +230,18 @@ def train(args, model, enc=False):
             outputs = model(inputs, only_encode=enc)
 
             #print("targets", np.unique(targets[:, 0].cpu().data.numpy()))
-
+            #print("This is me on traget")
+            #print(np.min(targets.cpu().detach().numpy()))
+            #print("This is me after target")
             optimizer.zero_grad()
             loss = criterion(outputs, targets[:, 0])
+            #print("This is me on loss")
+            #print(loss)
+            #print("This is me after loss")
             loss.backward()
             optimizer.step()
 
-            epoch_loss.append(loss.data[0])
+            epoch_loss.append(loss.cpu().detach().numpy().item())
             time_train.append(time.time() - start_time)
 
             if (doIouTrain):
@@ -294,7 +301,7 @@ def train(args, model, enc=False):
             outputs = model(inputs, only_encode=enc) 
 
             loss = criterion(outputs, targets[:, 0])
-            epoch_loss_val.append(loss.data[0])
+            epoch_loss_val.append(loss.cpu().detach().numpy().item())
             time_val.append(time.time() - start_time)
 
 
@@ -388,7 +395,29 @@ def save_checkpoint(state, is_best, filenameCheckpoint, filenameBest):
         torch.save(state, filenameBest)
 
 
-def main(args):
+def main():
+    class Args():
+        cuda = True  # NOTE: cpu-only has not been tested so you might have to change code if you deactivate this flag
+        model = "erfnet"
+        state = False
+        port = 8097
+        datadir = "/esat/toyota/trace/deeplearning/datasets_public/cityscapes/leftImg8bit_trainvaltest"
+        height = 512
+        num_epochs = 5
+        num_workers = 4
+        batch_size = 2
+        steps_loss = 50
+        steps_plot = 50
+        epochs_save = 0  # You can use this value to save model every X epochs
+        savedir = "~/Document/thesis_kontras/"
+        decoder = False
+        pretrainedEncoder = False  # , default="../trained_models/erfnet_encoder_pretrained.pth.tar")
+        visualize = False
+        iouTrain = False  # recommended: False (takes more time to train otherwise)
+        iouVal = True
+        resume = False
+
+    args = Args()
     savedir = f'../save/{args.savedir}'
 
     if not os.path.exists(savedir):
@@ -480,28 +509,30 @@ def main(args):
     model = train(args, model, False)   #Train decoder
     print("========== TRAINING FINISHED ===========")
 
-if __name__ == '__main__':
-    parser = ArgumentParser()
-    parser.add_argument('--cuda', action='store_true', default=True)  #NOTE: cpu-only has not been tested so you might have to change code if you deactivate this flag
-    parser.add_argument('--model', default="erfnet")
-    parser.add_argument('--state')
 
-    parser.add_argument('--port', type=int, default=8097)
-    parser.add_argument('--datadir', default=os.getenv("HOME") + "/datasets/cityscapes/")
-    parser.add_argument('--height', type=int, default=512)
-    parser.add_argument('--num-epochs', type=int, default=150)
-    parser.add_argument('--num-workers', type=int, default=4)
-    parser.add_argument('--batch-size', type=int, default=6)
-    parser.add_argument('--steps-loss', type=int, default=50)
-    parser.add_argument('--steps-plot', type=int, default=50)
-    parser.add_argument('--epochs-save', type=int, default=0)    #You can use this value to save model every X epochs
-    parser.add_argument('--savedir', required=True)
-    parser.add_argument('--decoder', action='store_true')
-    parser.add_argument('--pretrainedEncoder') #, default="../trained_models/erfnet_encoder_pretrained.pth.tar")
-    parser.add_argument('--visualize', action='store_true')
-
-    parser.add_argument('--iouTrain', action='store_true', default=False) #recommended: False (takes more time to train otherwise)
-    parser.add_argument('--iouVal', action='store_true', default=True)  
-    parser.add_argument('--resume', action='store_true')    #Use this flag to load last checkpoint for training  
-
-    main(parser.parse_args())
+# if __name__ == '__main__':
+#     parser = ArgumentParser()
+#     parser.add_argument('--cuda', action='store_true', default=True)  #NOTE: cpu-only has not been tested so you might have to change code if you deactivate this flag
+#     parser.add_argument('--model', default="erfnet")
+#     parser.add_argument('--state')
+#
+#     parser.add_argument('--port', type=int, default=8097)
+#     parser.add_argument('--datadir', default=os.getenv("HOME") + "/datasets/cityscapes/")
+#     parser.add_argument('--height', type=int, default=512)
+#     parser.add_argument('--num-epochs', type=int, default=150)
+#     parser.add_argument('--num-workers', type=int, default=4)
+#     parser.add_argument('--batch-size', type=int, default=6)
+#     parser.add_argument('--steps-loss', type=int, default=50)
+#     parser.add_argument('--steps-plot', type=int, default=50)
+#     parser.add_argument('--epochs-save', type=int, default=0)    #You can use this value to save model every X epochs
+#     parser.add_argument('--savedir', required=True)
+#     parser.add_argument('--decoder', action='store_true')
+#     parser.add_argument('--pretrainedEncoder') #, default="../trained_models/erfnet_encoder_pretrained.pth.tar")
+#     parser.add_argument('--visualize', action='store_true')
+#
+#     parser.add_argument('--iouTrain', action='store_true', default=False) #recommended: False (takes more time to train otherwise)
+#     parser.add_argument('--iouVal', action='store_true', default=True)
+#     parser.add_argument('--resume', action='store_true')    #Use this flag to load last checkpoint for training
+#
+#     main(parser.parse_args())
+main()
